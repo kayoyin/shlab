@@ -270,9 +270,47 @@ int builtin_cmd(char **argv)
 
 /*
  * do_bgfg - Execute the builtin bg and fg commands
+ * The bg <job> command restarts <job> by sending it a SIGCONT signal, and then runs it in the background. The <job> argument can be either a PID or a JID.
+ * The fg <job> command restarts <job> by sending it a SIGCONT signal, and then runs it in the foreground. The <job> argument can be either a PID or a JID.
  */
 void do_bgfg(char **argv)
 {
+    struct job_t *job;
+    char *arg;
+
+    arg =argv[1];
+
+    if (arg == NULL) { //no argument
+      return;
+    }
+
+    if (arg[0] == '%'){
+      int jid = atoi(&arg[1]);
+      job = getjobjid(jobs, jid);
+      if (job == NULL){ // job doesn't exist
+        return;
+      }
+    } else if (isdigit(arg[0]))
+    {
+      pid_t pid = atoi(arg);
+      job = getjobpid(jobs, pid);
+      if (job == NULL){ // job doesn't exist
+        return;
+      }
+    } else
+    { //neither jid or pid invalid argument
+      return;
+    }
+
+    kill(job->pid, SIGCONT);
+
+    if (!strcmp( argv[0], "fg") ){
+        job->state = FG;
+        waitfg (job->pid);
+    } else {
+        job->state = BG;
+    }
+
     return;
 }
 
@@ -281,7 +319,8 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
-    return;
+  while(fgpid(jobs)==pid) {}
+  return;
 }
 
 /*****************
