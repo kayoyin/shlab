@@ -2,6 +2,7 @@
  * tsh - A tiny shell program with job control
  *
  * Kayo Yin kayo.yin
+ * Shrey Aryan shrey.aryan
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -172,28 +173,47 @@ void eval(char *cmdline)
     char buf[MAXLINE];
     int bg;
     pid_t pid;
+    sigset_t set;
+
 
     strcpy(buf, cmdline);
     bg = parseline(buf, argv);
     if (argv[0] == NULL)
       return;
 
-    if (!builtin_cmd(argv)) {
-      if ((pid = fork()) == 0) {   /* Child runs user job */
-        if (execve(argv[0], argv, environ) < 0) {
-          printf("%s: Command not found.\n", argv[0]);
-          exit(0);
+    if (!builtin_cmd(argv))
+    {
+      sigemptyset(&set);
+      sigaddset(&set, SIGCHLD);
+      sigprocmask(SIG_BLOCK, &set, NULL);
+
+
+      if ((pid = fork()) == 0)
+        {   /* Child runs user job */
+          setpgid(0,0);
+          sigprocmask(SIG_BLOCK,&set, NULL);
+          if (execve(argv[0], argv, environ) < 0) {
+            printf("%s: Command not found.\n", argv[0]);
+            exit(0);
         }
       }
 
       /* Parent waits for foreground job to terminate */
       if (!bg) {
         int status;
+        addjob(jobs, pid, FG,cmdline);
+        sigprocmask(SIG_BLOCK,&set, NULL);
+
         if (waitpid(pid, &status, 0) < 0)
           unix_error("waitfg: waitpid error");
         }
         else
-          printf("%d %s", pid, cmdline);
+        {
+          addjob(jobs, pid, BG,cmdline);
+          sigprocmask(SIG_BLOCK,&set, NULL);
+          printf("[%d] (%d) %s", pid2jid(pid), (int)pid, cmdline);
+        }
+
         }
         return;
 }
@@ -256,15 +276,41 @@ int parseline(const char *cmdline, char **argv)
 }
 
 /*
- * builtin_cmd - If the user has typed a built-in command then execute
- *    it immediately.
+builtin_cmd - If the user has typed a built-in command then execute
+it immediately.
+
+Recall that tsh should support the following built-in commands:
+    The quit command terminates the shell.
+    The jobs command lists all background jobs.
+    The bg <job> command restarts <job> by sending it a SIGCONT signal, and then runs it in the background.
+    The fg <job> command restarts <job> by sending it a SIGCONT signal, and then runs it in the foreground.
  */
 int builtin_cmd(char **argv)
 {
+  // quit command terminate the shell
   if (!strcmp(argv[0], "quit"))
-    exit(0);
+    {
+        exit(0);
+    }
+
+  // jobs command lists all the background jobs
+  if (!strcmp(argv[0], "jobs"))
+    {
+      listjobs(jobs);
+      return 1;
+    }
+
+  // bg <job> command restarts <job> by sending it a SIGCONT signal and then runs
+  // it in the background.
+  if (!strcmp(argv[0], "bg") || !strcmp(argv[0], "fg"))
+    {
+      do_bgfg(argv);
+      return 1;
+    }
+
   if (!strcmp(argv[0], "&"))
     return 1;
+
   return 0;
 }
 
@@ -284,31 +330,43 @@ void do_bgfg(char **argv)
       return;
     }
 
-    if (arg[0] == '%'){
-      int jid = atoi(&arg[1]);
-      job = getjobjid(jobs, jid);
-      if (job == NULL){ // job doesn't exist
+    if (arg[0] == '%')
+      {
+        int jid = atoi(&arg[1]);
+        job = getjobjid(jobs, jid);
+        if (job == NULL)
+        { // job doesn't exist
+          return;
+        }
+      }
+    else if (isdigit(arg[0]))
+      {
+        pid_t pid = atoi(arg);
+        job = getjobpid(jobs, pid);
+        if (job == NULL)
+        { // job doesn't exist
+          return;
+        }
+      }
+    else
+      { //neither jid or pid invalid argument
         return;
       }
-    } else if (isdigit(arg[0]))
+
+
+    if (!strcmp( argv[0], "fg") )
     {
-      pid_t pid = atoi(arg);
-      job = getjobpid(jobs, pid);
-      if (job == NULL){ // job doesn't exist
-        return;
-      }
-    } else
-    { //neither jid or pid invalid argument
-      return;
-    }
-
-    kill(job->pid, SIGCONT);
-
-    if (!strcmp( argv[0], "fg") ){
         job->state = FG;
+        if (kill(-job->pid, SIGCONT) < 0)
+          unix_error("DO_BGFG ERROR");
         waitfg (job->pid);
-    } else {
-        job->state = BG;
+    }
+    else
+    {
+      job->state = BG;
+      if (kill(-job->pid, SIGCONT) < 0)
+        unix_error("DO_BGFG ERROR");
+
     }
 
     return;
@@ -319,7 +377,11 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
-  while(fgpid(jobs)==pid) {}
+  while(fgpid(jobs) == pid)
+    {
+      sleep(1);
+    }
+
   return;
 }
 
@@ -336,7 +398,25 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig)
 {
-    return;
+    pid_t pid;
+    int status;
+
+    while((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0)
+      {
+        // if child job terminated because it recieved a signals or
+        // if child becomes a zombie
+        // then it should be deleted from the job list
+        if(WIFSIGNALED(status) || WIFEXITED(status))
+          {
+            deletejob(jobs, pid);
+          }
+        if(WIFSTOPPED(status))
+          {
+            getjobpid(jobs, pid)->state =ST;
+          }
+      }
+      if (errno != ECHILD)
+        unix_error("waitpid error");
 }
 
 /*
@@ -346,7 +426,17 @@ void sigchld_handler(int sig)
  */
 void sigint_handler(int sig)
 {
-    return;
+
+  //  When you implement your signal handlers, be sure to send SIGINT and SIGTSTP signals
+  //  to the entire foreground process group, using ”-pid” instead of ”pid” in the argument
+  //  to the kill function
+  pid_t pid = fgpid(jobs);
+  if(pid != 0)
+    {
+      if (kill(-pid,sig) < 0)
+        unix_error("SIGINT ERROR");
+    }
+  return;
 }
 
 /*
@@ -356,6 +446,16 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig)
 {
+  //  When you implement your signal handlers, be sure to send SIGINT and SIGTSTP signals
+  //  to the entire foreground process group, using ”-pid” instead of ”pid” in the argument
+  //  to the kill function
+
+    pid_t pid = fgpid(jobs);
+    if(pid != 0)
+      {
+        if (kill(-pid,sig) < 0)
+          unix_error("SIGSTOP ERROR");
+      }
     return;
 }
 
