@@ -191,7 +191,7 @@ void eval(char *cmdline)
               sigprocmask(SIG_UNBLOCK,&set, NULL);
               if (execve(argv[0], argv, environ) < 0)
               {
-                printf("%s: Command not found.\n", argv[0]);
+                printf("%s: Command not found\n", argv[0]);
                 exit(0);
               }
           }
@@ -284,91 +284,93 @@ Recall that tsh should support the following built-in commands:
     The fg <job> command restarts <job> by sending it a SIGCONT signal, and then runs it in the foreground.
  */
 
-int builtin_cmd(char **argv)
-{
-  // quit command terminate the shell
-  if (!strcmp(argv[0], "quit"))
-    {
-        exit(0);
-    }
+ int builtin_cmd(char **argv)
+ {
+   // quit command terminate the shell
+   if (!strcmp(argv[0], "quit"))
+     {
+         exit(0);
+     }
 
-  // jobs command lists all the background jobs
-  else if (!strcmp(argv[0], "jobs"))
-    {
-      listjobs(jobs);
-      return 1;
-    }
+   // jobs command lists all the background jobs
+   else if (!strcmp(argv[0], "jobs"))
+     {
+       listjobs(jobs);
+       return 1;
+     }
 
-  // bg <job> command restarts <job> by sending it a SIGCONT signal and then runs
-  // it in the background.
-  else if (!strcmp(argv[0], "bg") || !strcmp(argv[0], "fg"))
-    {
-      do_bgfg(argv);
-      return 1;
-    }
+   // bg <job> command restarts <job> by sending it a SIGCONT signal and then runs
+   // it in the background.
+   else if (!strcmp(argv[0], "bg") || !strcmp(argv[0], "fg"))
+     {
+       do_bgfg(argv);
+       return 1;
+     }
 
 
-  return 0;
-}
+   return 0;
+ }
 
 /*
  * do_bgfg - Execute the builtin bg and fg commands
  * The bg <job> command restarts <job> by sending it a SIGCONT signal, and then runs it in the background. The <job> argument can be either a PID or a JID.
  * The fg <job> command restarts <job> by sending it a SIGCONT signal, and then runs it in the foreground. The <job> argument can be either a PID or a JID.
 */
-void do_bgfg(char **argv)
+void do_bgfg ( char **argv )
 {
     struct job_t *job;
-
-    while ( *argv )
-      printf("Printing something %s\n", *argv++ );
-
     char *arg;
+    pid_t pid = 0;
 
-    arg =argv[1];
+    arg = argv[1];
 
-    if (arg == NULL)
+
+    if ( arg == NULL )
     { //no argument
-      return;
+        return;
     }
 
-    if (arg[0] == '%')
-      {
+    if ( arg[ 0 ] == '%' )
+     {
         int jid = atoi(&arg[1]);
         job = getjobjid(jobs, jid);
-        if (job == NULL)
+
+        if ( job == NULL )
         {
-            printf("%s: No such job\n", arg);
+            printf ( "%s: No such job\n", arg );
             return;
         }
-      }
-    else
-      {
-        pid_t pid = (pid_t) atoi(arg);
+        else
+        {
+            pid = job->pid;
+        }
+    }
+
+    else if ( isdigit ( arg[ 0 ] ) )
+    {
+        pid = (pid_t) atoi(arg);
         job = getjobpid(jobs, pid);
-        if (job == NULL)
+
+        if ( job == NULL )
         {
-            printf("(%d): No such process\n", atoi(arg));
+            printf ( "(%d): No such process\n", pid );
             return;
         }
+    }
+
+    if (kill(-pid, SIGCONT) < 0)
+      unix_error("do_bgfg ERROR");
+
+      if (!strcmp(argv[0], "bg"))
+      {
+        job->state = BG;
+        printf("[%d] (%d) %s", job->jid, job->pid, job->cmdline);
       }
-
-    if (strcmp(argv[0], "bg")==0)
-    {
-      job->state = BG;
-      printf("[%d] (%d) %s", job->jid, job->pid, job->cmdline);
-      if (kill(-job->pid, SIGCONT) < 0)
-        unix_error("DO_BGFG ERROR");
-
-    }
-    else
-    {
-      job->state = FG;
-      printf("[%d] (%d) %s", job->jid, job->pid, job->cmdline);
-      if (kill(-job->pid, SIGCONT) < 0)
-        unix_error("DO_BGFG ERROR");
-      waitfg(job->pid);
-    }
+      else
+      {
+        job->state = FG;
+        waitfg(job->pid);
+      }
 
     return;
 }
@@ -376,15 +378,15 @@ void do_bgfg(char **argv)
 /*
  * waitfg - Block until process pid is no longer the foreground process
  */
-void waitfg(pid_t pid)
-{
-    while (1)
-    {
-        if (pid != fgpid(jobs)) break;
-        else sleep(1);
-    }
-    return;
-}
+ void waitfg ( pid_t pid )
+ {
+   while (1)
+   {
+       if (pid != fgpid(jobs)) break;
+       else sleep(1);
+   }
+   return;
+ }
 
 /*****************
  * Signal handlers
@@ -397,33 +399,33 @@ void waitfg(pid_t pid)
  *     available zombie children, but doesn't wait for any other
  *     currently running children to terminate.
  */
-void sigchld_handler(int sig)
-{
-    pid_t pid;
-    int status;
+ void sigchld_handler(int sig)
+ {
+     pid_t pid;
+     int status;
 
-    while((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0)
-      {
-        // if child job terminated because it recieved a signals or
-        // if child becomes a zombie
-        // then it should be deleted from the job list
-        if (WIFEXITED(status)) {
-            deletejob(jobs, pid); // Delete the child from the job list
-        }
+     while((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0)
+       {
+         // if child job terminated because it recieved a signals or
+         // if child becomes a zombie
+         // then it should be deleted from the job list
+         if (WIFEXITED(status)) {
+             deletejob(jobs, pid); // Delete the child from the job list
+         }
 
-        if (WIFSIGNALED(status)) {
-            deletejob(jobs,pid);
-            printf("Job [%d] (%d) terminated by signal %d\n",  pid2jid(pid), (int) pid, WTERMSIG(status));
-        }
+         if (WIFSIGNALED(status)) {
+             deletejob(jobs,pid);
+             printf("Job [%d] (%d) terminated by signal %d\n",  pid2jid(pid), (int) pid, WTERMSIG(status));
+         }
 
-        if(WIFSTOPPED(status))
-          {
-            getjobpid(jobs, pid)->state =ST;
-            printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), (int) pid, WSTOPSIG(status));
-          }
-      }
+         if(WIFSTOPPED(status))
+           {
+             getjobpid(jobs, pid)->state =ST;
+             printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), (int) pid, WSTOPSIG(status));
+           }
+       }
 
-}
+ }
 
 /*
  * sigint_handler - The kernel sends a SIGINT to the shell whenver the
