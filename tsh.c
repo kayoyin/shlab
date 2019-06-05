@@ -425,12 +425,12 @@ void do_bgfg ( char **argv )
              deletejob(jobs, pid); // Delete the child from the job list
          }
 
-         if (WIFSIGNALED(status)) { // signal caused child to terminate
-             deletejob(jobs,pid);
-             printf("Job [%d] (%d) terminated by signal %d\n",  pid2jid(pid), (int) pid, WTERMSIG(status)); // print which signal caused termination
-         }
+         else if (WIFSIGNALED(status)) { // signal caused child to terminate
+           printf("Job [%d] (%d) terminated by signal %d\n",  pid2jid(pid), (int) pid, WTERMSIG(status)); // print which signal caused termination
+           deletejob(jobs,pid);
+	 }
 
-         if(WIFSTOPPED(status)) // child is stopped
+         else if(WIFSTOPPED(status)) // child is stopped
            {
              getjobpid(jobs, pid)->state =ST; // change state to stopped
              printf("Job [%d] (%d) stopped by signal %d\n", pid2jid(pid), (int) pid, WSTOPSIG(status));
